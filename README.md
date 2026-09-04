@@ -27,8 +27,10 @@ See [Releases](https://github.com/brunkstr/Stegstr/releases) for other builds an
 
 ### Command-line interface (CLI)
 
-Node 18+ only — no compiler, and `dist-cli/stegstr.mjs` ships self-contained, so
-it runs before you install anything:
+Node 18+ only. `dist-cli/stegstr.mjs` is committed and self-contained, with no
+runtime dependencies, so it runs straight from a bare clone with no `npm
+install` and no compiler. That matters for offline or network-isolated build
+environments, where installing dependencies is not an option:
 
 ```bash
 node dist-cli/stegstr.mjs selftest
