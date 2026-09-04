@@ -8,11 +8,12 @@ now score 100%.
 
 Everything below is reproducible from this repo. No Rust toolchain is needed.
 
-**Try it in a browser right now:** <https://stegstr-app.pages.dev> — that is this
-exact build, deployed as-is. Drop in a photo, embed a message, download it, send
-it through WhatsApp, drop the returned file back in. It is the same app that
-runs locally; nothing about the steganography depends on the server, and the
-whole thing works offline.
+**Try it in a browser:** <https://stegstr-app.pages.dev> — a hosted build of this
+app, for a first look without cloning. Drop in a photo, embed a message,
+download it, send it through WhatsApp, drop the returned file back in. Nothing
+about the steganography depends on the server, so the same code works offline
+and locally. Judge the pinned commit rather than the demo: the hosted copy may
+lag it, and it is the local build that this write-up measures.
 
 ---
 

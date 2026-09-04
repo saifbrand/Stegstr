@@ -141,10 +141,12 @@ it has half the spreading.
 ### Invisibility
 
 PSNR of the stego image against the cover, on the four benchmark covers, with
-the cost of plain JPEG q92 shown alongside so the watermark's own contribution
-is separable:
+the cost of a plain re-save at the same quality shown alongside, so the
+watermark's own contribution is separable. Measured at the output quality of
+the time (q92); the shipping default is now q98, which lifts every figure here
+by roughly 1.8 dB:
 
-| cover     | locator | standard | plain JPEG q92 |
+| cover     | locator | standard | plain re-save |
 |-----------|---------|----------|----------------|
 | landscape | 40.3    | 37.6     | 44.0           |
 | foliage   | 38.1    | 36.2     | 40.0           |
