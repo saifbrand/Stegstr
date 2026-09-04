@@ -25,6 +25,7 @@ import argparse
 import base64
 import io
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -37,7 +38,9 @@ sys.path.insert(0, str(Path(__file__).parent))
 import covers as covers_mod  # noqa: E402
 
 REPO = Path(__file__).resolve().parent.parent
-CLI = REPO / "dist-cli" / "stegstr.mjs"
+# STEGSTR_CLI lets this run against a clean clone rather than the working tree,
+# which is the only way to be sure the pinned commit is what scores.
+CLI = Path(os.environ.get("STEGSTR_CLI") or (REPO / "dist-cli" / "stegstr.mjs"))
 
 #: The gauntlet embeds a known 43-byte secret.
 SECRET = b"stegstr gauntlet secret payload 43 bytes!!!"

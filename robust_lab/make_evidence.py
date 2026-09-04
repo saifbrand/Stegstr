@@ -12,6 +12,7 @@ from __future__ import annotations
 import base64
 import io
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -26,7 +27,9 @@ import covers as covers_mod  # noqa: E402
 from gauntlet import PROFILES, SECRET, apply_profile, psnr, ssim  # noqa: E402
 
 REPO = Path(__file__).resolve().parent.parent
-CLI = REPO / "dist-cli" / "stegstr.mjs"
+# STEGSTR_CLI lets this run against a clean clone rather than the working tree,
+# which is the only way to be sure the pinned commit is what scores.
+CLI = Path(os.environ.get("STEGSTR_CLI") or (REPO / "dist-cli" / "stegstr.mjs"))
 OUT = Path.home() / "Desktop" / "Stegstr Contest Entry" / "evidence"
 COMMIT = subprocess.run(["git", "rev-parse", "HEAD"], cwd=REPO,
                         capture_output=True, text=True).stdout.strip()
