@@ -1,111 +1,125 @@
 ---
 name: stegstr
-summary: Embed and decode hidden messages in PNG images. Steganographic Nostr client for hiding data in images—works offline, no registration.
-description: Decode and embed Stegstr payloads in PNG images. Use when the user needs to extract hidden Nostr data from a Stegstr image, encode a payload into a cover PNG, or work with steganographic social networking (Nostr-in-images). Supports CLI (stegstr-cli decode, detect, embed, post) for scripts and AI agents.
+summary: Hide and recover messages in images so they survive WhatsApp, Telegram and Instagram. Steganographic Nostr client, works offline, no registration.
+description: Embed and detect Stegstr payloads in images. Use when the user needs to hide data in a photo, extract hidden data from one, or work with steganographic social networking (Nostr-in-images). Payloads survive platform recompression and resizing. Node CLI with JSON output for scripts and agents; no compiler required.
 license: MIT
 tags: steganography, nostr, images, crypto, integration, file-management, automation, cli
 install:
   requirements: |
-    - Rust (latest stable) - https://rustup.rs
+    - Node.js 18 or newer
     - Git
   steps: |
     1. git clone https://github.com/brunkstr/Stegstr.git
-    2. cd Stegstr/src-tauri && cargo build --release --bin stegstr-cli
-    3. Binary: target/release/stegstr-cli (Windows: stegstr-cli.exe)
+    2. cd Stegstr
+    3. Run it: node dist-cli/stegstr.mjs selftest
+       (the bundled CLI is self-contained - no npm install needed)
+    4. To rebuild from source: npm install && npm run build:cli
 permissions:
   - filesystem
 metadata:
   homepage: https://stegstr.com
-  for-agents: https://www.stegstr.com/wiki/for-agents.html
   repo: https://github.com/brunkstr/Stegstr
 ---
 
 # Stegstr
 
-Stegstr hides Nostr messages and arbitrary payloads inside PNG images using steganography. Users embed their feed (posts, DMs, JSON) into images and share them; recipients use Detect to load the hidden content. No registration, works offline.
+Stegstr hides messages and arbitrary payloads inside images. Unlike naive
+steganography, the payload is designed to survive being sent through a real
+messaging platform: the encoder normalises the image before embedding, so
+resizing and re-compression by WhatsApp, Telegram or Instagram do not destroy it.
 
 ## When to use this skill
 
-- User wants to **decode** (extract) hidden data from a PNG that contains Stegstr data.
-- User wants to **embed** a payload into a cover PNG (e.g. Nostr bundle, JSON, text).
-- User mentions steganography, Nostr-in-images, Stegstr, hiding data in images, or secret messages in photos.
-- User needs programmatic access for automation, scripts, or AI agents.
+- Hide a message, JSON, or arbitrary bytes inside an image.
+- Extract hidden data from an image that may have been through a chat app.
+- The user mentions steganography, Nostr-in-images, Stegstr, hiding data in
+  photos, or secret messages in pictures.
+- Programmatic or agent-driven use.
 
-## CLI (headless)
-
-Build the CLI from the Stegstr repo:
-
-```bash
-git clone https://github.com/brunkstr/Stegstr.git
-cd Stegstr/src-tauri
-cargo build --release --bin stegstr-cli
-```
-
-Binary: `target/release/stegstr-cli` (or `stegstr-cli.exe` on Windows).
-
-### Decode (extract payload)
+## CLI
 
 ```bash
-stegstr-cli decode image.png
+node dist-cli/stegstr.mjs selftest      # confirm it works; no install required
 ```
 
-Writes raw payload to stdout. Valid UTF-8 JSON is printed as text; otherwise `base64:<data>`. Exit 0 on success.
+Every command accepts `--json`. Exit codes: `0` success, `1` no payload found,
+`2` usage or input error. Prefer `--json`: it is stable, and the human output is
+not.
 
-### Detect (decode + decrypt app bundle)
+### Embed
 
 ```bash
-stegstr-cli detect image.png
+node dist-cli/stegstr.mjs embed cover.jpg -o out.jpg --payload "secret text"
+node dist-cli/stegstr.mjs embed cover.jpg -o out.jpg --payload-file note.json --mode standard
+node dist-cli/stegstr.mjs embed cover.jpg -o out.jpg --payload-base64 <b64> --mode locator
 ```
 
-Decodes and decrypts; prints Nostr bundle JSON `{ "version": 1, "events": [...] }`.
+The command decodes its own output before reporting success, so `ok: true`
+means the payload was verified present, not merely written.
 
-### Embed (hide payload in image)
+### Detect
 
 ```bash
-stegstr-cli embed cover.png -o out.png --payload "text or JSON"
-stegstr-cli embed cover.png -o out.png --payload @bundle.json
-stegstr-cli embed cover.png -o out.png --payload @bundle.json --encrypt
+node dist-cli/stegstr.mjs detect image.jpg --json
 ```
 
-Use `--payload @file` to load from file. Use `--encrypt` so any Stegstr user can detect. Use `--payload-base64 <base64>` for binary payloads.
+Tries every mode unless `--mode` names one. Returns the payload as `utf8` when
+it is text and `base64` when it is not; check the `encoding` field rather than
+guessing.
 
-### Post (create kind 1 note bundle)
+### Capacity and modes
 
 ```bash
-stegstr-cli post "Your message here" --output bundle.json
-stegstr-cli post "Message" --privkey-hex <64-char-hex> --output bundle.json
+node dist-cli/stegstr.mjs modes --json
+node dist-cli/stegstr.mjs capacity cover.jpg --mode standard --json
 ```
 
-Creates a Nostr bundle; use `stegstr-cli embed` to hide it in an image.
+## Modes
 
-## Example workflow
+Capacity and robustness trade against each other, so pick deliberately:
 
-```bash
-# Create a post bundle
-stegstr-cli post "Hello from OpenClaw" --output bundle.json
+| Mode       | Payload  | Min image edge | Use for |
+|------------|----------|----------------|---------|
+| `locator`  | 48 bytes | 320 px         | Anything going through WhatsApp or Instagram. Sized to carry a reference (a 32-byte Nostr event id plus a 16-byte key); the message itself syncs over relays. |
+| `standard` | 163 bytes| 384 px         | A short note carried entirely inside the image. Survives the mainstream platforms. |
+| `bulk`     | 1377 bytes | 960 px       | Lossless delivery only: Telegram "send as file", email, disk. Will not survive recompression. |
 
-# Embed into a cover image (encrypted for any Stegstr user)
-stegstr-cli embed cover.png -o stego.png --payload @bundle.json --encrypt
+`locator` is the default and the one to use when robustness matters.
 
-# Recipient detects and extracts
-stegstr-cli detect stego.png
+## Driving the running app
+
+The app exposes the same operations on `window.stegstr`, so a browser
+automation driver can use the GUI build headlessly:
+
+```js
+await window.stegstr.encode(coverBlob, "secret", "standard"); // -> Blob (JPEG)
+await window.stegstr.decode(imageBlob);                       // -> string | null
+await window.stegstr.decodeDetailed(imageBlob);               // -> { ok, payload, mode }
+window.stegstr.modes();                                       // -> capacity per mode
 ```
 
-## Image format
+## What survives, and what does not
 
-PNG only (lossless). JPEG or other lossy formats will corrupt the hidden data.
+Measured against modelled platform channels and confirmed on the shipping
+encoder (see `robust_lab/RESULTS.md`):
+
+- **Survives:** re-compression down to JPEG Q60, resizing by any factor,
+  metadata stripping, chroma subsampling, greyscale conversion, being forwarded
+  through two apps in a row, and small aspect-ratio crops.
+- **Does not survive:** rotation, crops larger than about 2% per edge, heavy
+  filtering, or screenshots at reduced resolution.
+
+If a decode fails, the usual cause is one of those, not a bad image.
+
+## Image formats
+
+Input may be PNG or JPEG. Output should be `.jpg`; PNG output is written
+losslessly but platforms convert it to JPEG anyway. Images smaller than a mode's
+minimum edge are refused rather than silently producing an unreadable file.
 
 ## Payload format
 
-- **Magic:** `STEGSTR` (7 bytes ASCII)
-- **Length:** 4 bytes, big-endian
-- **Payload:** UTF-8 JSON or raw bytes (desktop app encrypts; CLI can embed raw or `--encrypt`)
-
-Decrypted bundle: `{ "version": 1, "events": [ ... Nostr events ... ] }`. Schema: [bundle.schema.json](https://raw.githubusercontent.com/brunkstr/Stegstr/main/schema/bundle.schema.json).
-
-## Links
-
-- **agents.txt:** https://www.stegstr.com/agents.txt
-- **For agents:** https://www.stegstr.com/wiki/for-agents.html
-- **CLI docs:** https://www.stegstr.com/wiki/cli.html
-- **Downloads:** https://github.com/brunkstr/Stegstr/releases/latest
+`SGX1` magic, a compression flag, a two-byte length, then the payload,
+Reed-Solomon encoded into a fixed-size frame. Payloads are deflate-compressed
+when that helps. The app additionally encrypts before embedding; the CLI embeds
+what it is given, so encrypt first if you need confidentiality.

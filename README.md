@@ -2,10 +2,16 @@
 
 **Steganographic social networking.** Hide messages in images and share them anywhere—local-first, with optional Nostr sync.
 
+Hidden data **survives being sent through WhatsApp, Telegram and Instagram**: the
+encoder normalises the image before embedding, so the resizing and
+re-compression those platforms apply do not destroy the payload. See
+[SUBMISSION.md](SUBMISSION.md) for what changed and the measurements, and
+[robust_lab/RESULTS.md](robust_lab/RESULTS.md) for how to reproduce them.
+
 Stegstr gives you two ways to use it:
 
 - **UI app** — Desktop and mobile app. Create posts, embed them in images, and detect content from images with a graphical interface.
-- **CLI module** — Command-line tool for scripts and automation. Decode, detect, embed, and create Nostr-style posts from the terminal.
+- **CLI module** — Command-line tool for scripts and automation. Embed, detect, and inspect capacity from the terminal, with JSON output for agents.
 
 Both use the same steganographic format. Data is stored and processed **locally**; Stegstr is **not exclusively Nostr**. You can use it fully offline (embed/detect in images and share via any channel). When you want to sync over the network, Stegstr can act as a Nostr client and use relays.
 
@@ -21,20 +27,30 @@ See [Releases](https://github.com/brunkstr/Stegstr/releases) for other builds an
 
 ### Command-line interface (CLI)
 
-You need [Rust](https://rustup.rs) (latest stable). Clone and build the CLI:
+Node 18+ only — no compiler, and `dist-cli/stegstr.mjs` ships self-contained, so
+it runs before you install anything:
 
 ```bash
-git clone https://github.com/brunkstr/Stegstr.git
-cd Stegstr
-cd src-tauri && cargo build --release --bin stegstr-cli
+node dist-cli/stegstr.mjs selftest
+node dist-cli/stegstr.mjs embed cover.jpg -o out.jpg --payload "hello"
+node dist-cli/stegstr.mjs detect out.jpg --json
+node dist-cli/stegstr.mjs modes --json
 ```
 
-Binary: `target/release/stegstr-cli` (Windows: `stegstr-cli.exe`). Example:
+To rebuild it from source: `npm install && npm run build:cli`.
+
+Every command accepts `--json` and returns meaningful exit codes (`0` success,
+`1` nothing found, `2` bad usage), so it drives cleanly from a script or an
+agent. `embed` decodes its own output before reporting success.
+
+### Does it really survive WhatsApp?
+
+Check with your own phone rather than taking it on trust:
 
 ```bash
-./target/release/stegstr-cli post "Hello from CLI" --output bundle.json
-./target/release/stegstr-cli embed cover.png -o out.png --payload @bundle.json --encrypt
-./target/release/stegstr-cli detect out.png
+npm run testkit                    # writes 8 images to testkit/out/
+# send them to yourself as normal photos, save the results into returned/
+npm run testkit:verify returned/
 ```
 
 ## Build from source (full app)

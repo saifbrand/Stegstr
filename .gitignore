@@ -29,3 +29,17 @@ dist-ssr
 # Website and browser app — hosted separately, not part of this repo
 website/
 stegstr-website.zip
+
+# Contest packaging artifacts, not part of the source
+entry-images/
+Stegstr-entry.zip
+READ-ME-FIRST.md
+ENTRY-TEXT.md
+REPLY-TO-CLIENT.txt
+dist-cli/
+testkit/out/
+testkit/returned/
+robust_lab/covers/
+
+__pycache__/
+*.pyc
