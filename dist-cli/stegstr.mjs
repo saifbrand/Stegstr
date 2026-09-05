@@ -9100,6 +9100,9 @@ function resamplePlane(src, srcW, srcH, dstW, dstH) {
   return out;
 }
 function frame(payload, p) {
+  if (payload.length === 0) {
+    throw new Error("payload is empty: there is nothing to hide");
+  }
   let body = pako.deflate(payload);
   let flag = 1;
   if (body.length >= payload.length) {

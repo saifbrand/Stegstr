@@ -350,6 +350,13 @@ export function resamplePlane(
 // ---------------------------------------------------------------------------
 
 function frame(payload: Uint8Array, p: StdmParams): Uint8Array {
+  // An empty payload is always a mistake, and the failure is invisible: the
+  // embed succeeds, the image looks right, and the recipient gets nothing.
+  // Refusing here covers the CLI, the app and the agent API at once.
+  if (payload.length === 0) {
+    throw new Error("payload is empty: there is nothing to hide");
+  }
+
   let body = pako.deflate(payload);
   let flag = 1;
   if (body.length >= payload.length) {

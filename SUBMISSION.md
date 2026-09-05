@@ -42,7 +42,15 @@ Confirm the whole stack in about a minute:
 npm test               # 87 unit tests
 npm run build:cli      # rebuild the CLI from source
 npm run test:browser   # builds the app, then drives a real Chromium round trip
+npm run test:hostile   # deliberate bad inputs: empty, oversized, 1x1, 12 MP, non-image
 ```
+
+`test:hostile` is section 5A of your instructions, run as code: empty message,
+payload past capacity, unicode and control characters, a non-image file, a
+missing file, unknown flags, 1x1 and 6000x400 covers. Every case must either
+give the right answer or a clear error naming the fix. It caught one: an empty
+payload used to embed successfully and report "verified", handing back an image
+that carried nothing. It is now refused.
 
 ## 2. Check the robustness claim yourself
 
