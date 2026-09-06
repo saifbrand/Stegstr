@@ -36,6 +36,7 @@ from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).parent))
 import covers as covers_mod  # noqa: E402
+import busy_covers  # noqa: E402
 
 REPO = Path(__file__).resolve().parent.parent
 # STEGSTR_CLI lets this run against a clean clone rather than the working tree,
@@ -137,7 +138,10 @@ def main() -> int:
     with tempfile.TemporaryDirectory() as tmp:
         tmpdir = Path(tmp)
         for name in names:
-            cover = covers_mod.get_cover(name, 1600, 1200)
+            if name in busy_covers.BUSY:
+                cover = busy_covers.get_busy(name, 1920, 1080)
+            else:
+                cover = covers_mod.get_cover(name, 1600, 1200)
             stego_path = tmpdir / f"{name}.{args.ext}"
 
             res = embed(cover, stego_path, args.mode, args.delta, args.quality)

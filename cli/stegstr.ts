@@ -14,11 +14,13 @@ import {
   type ModeName,
   type StdmParams,
   detectFromRgba,
+  embedCalibrated,
   embedIntoRgba,
   minimumEdge,
+  resamplePlane,
   payloadBytes,
 } from "../src/stego-stdm";
-import { decodeImage, readImage, writeImage, type Raster } from "./image-io";
+import { decodeImage, encodeJpeg, readImage, writeImage, type Raster } from "./image-io";
 
 const USAGE = `stegstr - resize-robust steganography
 
@@ -147,8 +149,31 @@ function cmdEmbed(args: Args): number {
   }
 
   const raster = readImage(cover);
+
+  // Calibrate against a stress re-encode: some covers, notably documents and
+  // screenshots, need more strength than a photograph to survive at all.
+  const calibrated = embedCalibrated(
+    raster.data, raster.width, raster.height, payload, params,
+    (pixels, w, h) => {
+      // The harshest profile in the wild: downscale to a 1080px long edge and
+      // recompress hard. Calibrating against quality alone left resize broken.
+      const scale = Math.min(1, 1080 / Math.max(w, h));
+      const rw = Math.max(1, Math.round(w * scale));
+      const rh = Math.max(1, Math.round(h * scale));
+      const small = new Uint8ClampedArray(rw * rh * 4);
+      for (let ch = 0; ch < 3; ch++) {
+        const plane = new Float64Array(w * h);
+        for (let i = 0; i < w * h; i++) plane[i] = pixels[i * 4 + ch];
+        const resized = resamplePlane(plane, w, h, rw, rh);
+        for (let i = 0; i < rw * rh; i++) small[i * 4 + ch] = resized[i];
+      }
+      for (let i = 0; i < rw * rh; i++) small[i * 4 + 3] = 255;
+      const round = decodeImage(encodeJpeg({ data: small, width: rw, height: rh }, 55));
+      return { data: round.data, width: round.width, height: round.height };
+    },
+  );
   const embedded: Raster = {
-    data: embedIntoRgba(raster.data, raster.width, raster.height, payload, params),
+    data: calibrated.pixels,
     width: raster.width,
     height: raster.height,
   };
@@ -171,9 +196,13 @@ function cmdEmbed(args: Args): number {
       width: raster.width,
       height: raster.height,
       verified,
+      strength: Number(calibrated.delta.toFixed(1)),
+      survivesStressReencode: calibrated.verified,
     },
     verified
-      ? `Embedded ${payload.length} B in ${mode} mode -> ${out} (verified)`
+      ? `Embedded ${payload.length} B in ${mode} mode -> ${out} (verified` +
+        `${calibrated.verified ? "" : ", but it may not survive heavy recompression"}` +
+        `${calibrated.delta > params.delta ? `, strength raised to ${calibrated.delta.toFixed(0)} for this cover` : ""})`
       : `Wrote ${out} but verification failed - do not rely on this image`,
   );
   return verified ? 0 : 1;

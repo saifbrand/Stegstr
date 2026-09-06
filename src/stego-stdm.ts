@@ -117,6 +117,9 @@ export const MODES: Record<string, StdmParams> = {
 
 export type ModeName = keyof typeof MODES;
 
+/** Strength multipliers tried in order, weakest first. */
+const CALIBRATION_STEPS = [1, 1.45, 2, 2.75, 3.75];
+
 /** Key that derives the carrier layout. Same on both ends. */
 const KEY_SEED = 0x57e65712;
 
@@ -589,7 +592,31 @@ function decodeFrame(read: FrameRead, p: StdmParams): Uint8Array | null {
 }
 
 /** Recover a payload from a luma plane of any size, or null. */
+/**
+ * Recover a payload from a luma plane of any size, or null.
+ *
+ * The strength is not carried in the image - it cannot be, since reading it
+ * would require having already decoded - so the detector walks the same ladder
+ * the encoder calibrates along. The base step is tried first because it covers
+ * almost every photograph; the stronger ones only cost time on images that do
+ * not decode anyway. Reed-Solomon's integrity check plus the format marker
+ * reject a wrong guess, so a miss costs one transform rather than a false read.
+ */
 export function detectFromPlane(
+  y: Float64Array,
+  width: number,
+  height: number,
+  p: StdmParams,
+): Uint8Array | null {
+  for (const step of CALIBRATION_STEPS) {
+    const params = step === 1 ? p : { ...p, delta: p.delta * step };
+    const found = detectAtStrength(y, width, height, params);
+    if (found) return found;
+  }
+  return null;
+}
+
+function detectAtStrength(
   y: Float64Array,
   width: number,
   height: number,
@@ -625,6 +652,85 @@ export function detectFromPlane(
     if (result) return result;
   }
   return null;
+}
+
+
+// ---------------------------------------------------------------------------
+// Calibrated embedding
+// ---------------------------------------------------------------------------
+
+/**
+ * Put pixels through a platform-like round trip and hand back what survives.
+ *
+ * Supplied by the caller because the core carries no image codec: the browser
+ * uses canvas, Node uses jpeg-js. It must model both halves of what a platform
+ * does - the downscale and the recompression - because they fail differently
+ * and calibrating against only one leaves the other broken.
+ */
+export type StressCodec = (
+  pixels: Uint8ClampedArray,
+  width: number,
+  height: number,
+) => { data: Uint8ClampedArray; width: number; height: number };
+
+
+export interface CalibratedEmbed {
+  pixels: Uint8ClampedArray;
+  /** The step actually used, in canonical DCT units. */
+  delta: number;
+  /** True if the result survived the stress re-encode. */
+  verified: boolean;
+}
+
+/**
+ * Embed at the weakest strength that still survives a stress re-encode.
+ *
+ * A fixed strength cannot serve every cover. Photographs carry the default
+ * comfortably. A document scan or screenshot does not: it is mostly flat paper,
+ * and JPEG's quantiser zeroes small coefficients in smooth blocks, erasing the
+ * payload exactly where there is no detail to shelter it. Measured on a page of
+ * text, the default step lost the three harshest profiles; raising it to about
+ * twice that recovered all five.
+ *
+ * Rather than picking one number and being wrong for half of all images, this
+ * tries the default first and steps up only when the cover demands it, so
+ * photographs keep their invisibility and hard covers still work. The cost is
+ * paid in visibility only where it has to be, and the caller learns which
+ * happened.
+ */
+export function embedCalibrated(
+  data: Uint8ClampedArray,
+  width: number,
+  height: number,
+  payload: Uint8Array,
+  p: StdmParams,
+  stress: StressCodec,
+): CalibratedEmbed {
+  let last: CalibratedEmbed | null = null;
+
+  for (const step of CALIBRATION_STEPS) {
+    const params = step === 1 ? p : { ...p, delta: p.delta * step };
+    const pixels = embedIntoRgba(data, width, height, payload, params);
+
+    const attacked = stress(pixels, width, height);
+    const recovered = detectAtStrength(
+      lumaFromRgba(attacked.data, attacked.width, attacked.height),
+      attacked.width,
+      attacked.height,
+      params,
+    );
+    const ok =
+      recovered !== null &&
+      recovered.length === payload.length &&
+      recovered.every((v, i) => v === payload[i]);
+
+    last = { pixels, delta: params.delta, verified: ok };
+    if (ok) return last;
+  }
+
+  // Nothing survived. Return the strongest attempt and say so, rather than
+  // handing back an image that looks fine and carries nothing usable.
+  return last!;
 }
 
 // ---------------------------------------------------------------------------
@@ -665,6 +771,24 @@ export function applyDeltaToRgba(
 }
 
 /** Embed into RGBA pixels, returning modified pixels. */
+/**
+ * Correction passes after the first write.
+ *
+ * The open-loop delta assumes every pixel can absorb its share of the change.
+ * Near black or white they cannot: the value clips at the rail and that part of
+ * the signal is lost. At the default strength this barely matters, which is why
+ * a first attempt at fixing it showed nothing. It matters enormously once
+ * calibration raises the strength for a hard cover: on a page of text - 84% of
+ * it within a few levels of white - a stronger step made results *worse*,
+ * because the target moved further out of reach than the extra margin was
+ * worth.
+ *
+ * So after writing, re-read what the pixels actually carry and drive the
+ * remaining error back in. Clipped regions stay clipped, but the projection is
+ * spread over hundreds of coefficients and the rest take up the slack.
+ */
+const EMBED_PASSES = 4;
+
 export function embedIntoRgba(
   data: Uint8ClampedArray,
   width: number,
@@ -672,9 +796,64 @@ export function embedIntoRgba(
   payload: Uint8Array,
   p: StdmParams = LOCATOR,
 ): Uint8ClampedArray {
-  const y = lumaFromRgba(data, width, height);
-  const delta = computeDelta(y, width, height, payload, p);
-  return applyDeltaToRgba(data, delta, width, height);
+  const shortest = Math.min(width, height);
+  const needed = minimumEdge(p);
+  if (shortest < needed) {
+    throw new Error(
+      `image is too small for this mode: shortest edge is ${shortest}px, ` +
+        `needs at least ${needed}px - use a larger image or a mode with a smaller canvas`,
+    );
+  }
+
+  const codeword = frame(payload, p);
+  const carriers = carriersFor(p);
+  const { positions, signs, dither, chips } = carriers;
+  const n = p.canonical;
+  const invNorm = 1 / Math.sqrt(chips);
+
+  const canonOf = (pixels: Uint8ClampedArray): Float64Array => {
+    const plane = resamplePlane(lumaFromRgba(pixels, width, height), width, height, n, n);
+    dct2d(plane, n);
+    return plane;
+  };
+
+  const project = (coeffs: Float64Array, b: number): number => {
+    let acc = 0;
+    const base = b * chips;
+    for (let c = 0; c < chips; c++) acc += coeffs[positions[base + c]] * signs[base + c];
+    return acc * invNorm;
+  };
+
+  // Lattice targets are chosen once, from the untouched host. Re-choosing them
+  // each pass would let a bit drift into the neighbouring cell and flip.
+  const first = canonOf(data);
+  const targets = new Float64Array(carriers.bits);
+  for (let b = 0; b < carriers.bits; b++) {
+    const bit = (codeword[b >> 3] >> (7 - (b & 7))) & 1;
+    let k = Math.round((project(first, b) - dither[b]) / p.delta);
+    if (((k % 2) + 2) % 2 !== bit) k += 1;
+    targets[b] = k * p.delta + dither[b];
+  }
+
+  let out = new Uint8ClampedArray(data);
+  for (let pass = 0; pass < EMBED_PASSES; pass++) {
+    const coeffs = canonOf(out);
+    const corrections = new Float64Array(coeffs.length);
+
+    let worst = 0;
+    for (let b = 0; b < carriers.bits; b++) {
+      const err = targets[b] - project(coeffs, b);
+      worst = Math.max(worst, Math.abs(err));
+      const scaled = err * invNorm;
+      const base = b * chips;
+      for (let c = 0; c < chips; c++) corrections[positions[base + c]] += scaled * signs[base + c];
+    }
+    if (pass > 0 && worst < p.delta * 0.02) break;
+
+    idct2d(corrections, n);
+    out = applyDeltaToRgba(out, resamplePlane(corrections, n, n, width, height), width, height);
+  }
+  return out;
 }
 
 /** Detect from RGBA pixels. */

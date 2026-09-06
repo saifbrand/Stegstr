@@ -8950,6 +8950,7 @@ var MODES = {
   standard: STANDARD,
   bulk: BULK
 };
+var CALIBRATION_STEPS = [1, 1.45, 2, 2.75, 3.75];
 var KEY_SEED = 1474713362;
 function makeRng(seed) {
   let state = seed >>> 0;
@@ -9146,40 +9147,6 @@ function unframe(data, p, erasePos) {
   }
   return body;
 }
-function computeDelta(y, width, height, payload, p) {
-  const shortest = Math.min(width, height);
-  const needed = minimumEdge(p);
-  if (shortest < needed) {
-    throw new Error(
-      `image is too small for this mode: shortest edge is ${shortest}px, needs at least ${needed}px - use a larger image or a mode with a smaller canvas`
-    );
-  }
-  const codeword = frame(payload, p);
-  const carriers = carriersFor(p);
-  const { positions, signs, dither, chips } = carriers;
-  const n = p.canonical;
-  const canon = resamplePlane(y, width, height, n, n);
-  const original = Float64Array.from(canon);
-  dct2d(canon, n);
-  const invNorm = 1 / Math.sqrt(chips);
-  for (let b = 0; b < carriers.bits; b++) {
-    const bit = codeword[b >> 3] >> 7 - (b & 7) & 1;
-    let host = 0;
-    const base = b * chips;
-    for (let c = 0; c < chips; c++) host += canon[positions[base + c]] * signs[base + c];
-    host *= invNorm;
-    let k = Math.round((host - dither[b]) / p.delta);
-    if ((k % 2 + 2) % 2 !== bit) k += 1;
-    const target = k * p.delta + dither[b];
-    const correction = (target - host) * invNorm;
-    for (let c = 0; c < chips; c++) {
-      canon[positions[base + c]] += correction * signs[base + c];
-    }
-  }
-  idct2d(canon, n);
-  for (let i = 0; i < canon.length; i++) canon[i] -= original[i];
-  return resamplePlane(canon, n, n, width, height);
-}
 var CROP_HYPOTHESES = [
   { px: 0 },
   { px: 2 },
@@ -9238,6 +9205,14 @@ function decodeFrame(read, p) {
   return null;
 }
 function detectFromPlane(y, width, height, p) {
+  for (const step of CALIBRATION_STEPS) {
+    const params = step === 1 ? p : { ...p, delta: p.delta * step };
+    const found = detectAtStrength(y, width, height, params);
+    if (found) return found;
+  }
+  return null;
+}
+function detectAtStrength(y, width, height, p) {
   const carriers = carriersFor(p);
   for (const hypothesis of CROP_HYPOTHESES) {
     let dx;
@@ -9264,6 +9239,24 @@ function detectFromPlane(y, width, height, p) {
   }
   return null;
 }
+function embedCalibrated(data, width, height, payload, p, stress) {
+  let last = null;
+  for (const step of CALIBRATION_STEPS) {
+    const params = step === 1 ? p : { ...p, delta: p.delta * step };
+    const pixels = embedIntoRgba(data, width, height, payload, params);
+    const attacked = stress(pixels, width, height);
+    const recovered = detectAtStrength(
+      lumaFromRgba(attacked.data, attacked.width, attacked.height),
+      attacked.width,
+      attacked.height,
+      params
+    );
+    const ok = recovered !== null && recovered.length === payload.length && recovered.every((v, i) => v === payload[i]);
+    last = { pixels, delta: params.delta, verified: ok };
+    if (ok) return last;
+  }
+  return last;
+}
 function lumaFromRgba(data, width, height) {
   const y = new Float64Array(width * height);
   for (let i = 0; i < width * height; i++) {
@@ -9281,10 +9274,56 @@ function applyDeltaToRgba(data, delta, width, height) {
   }
   return out;
 }
+var EMBED_PASSES = 4;
 function embedIntoRgba(data, width, height, payload, p = LOCATOR) {
-  const y = lumaFromRgba(data, width, height);
-  const delta = computeDelta(y, width, height, payload, p);
-  return applyDeltaToRgba(data, delta, width, height);
+  const shortest = Math.min(width, height);
+  const needed = minimumEdge(p);
+  if (shortest < needed) {
+    throw new Error(
+      `image is too small for this mode: shortest edge is ${shortest}px, needs at least ${needed}px - use a larger image or a mode with a smaller canvas`
+    );
+  }
+  const codeword = frame(payload, p);
+  const carriers = carriersFor(p);
+  const { positions, signs, dither, chips } = carriers;
+  const n = p.canonical;
+  const invNorm = 1 / Math.sqrt(chips);
+  const canonOf = (pixels) => {
+    const plane = resamplePlane(lumaFromRgba(pixels, width, height), width, height, n, n);
+    dct2d(plane, n);
+    return plane;
+  };
+  const project = (coeffs, b) => {
+    let acc = 0;
+    const base = b * chips;
+    for (let c = 0; c < chips; c++) acc += coeffs[positions[base + c]] * signs[base + c];
+    return acc * invNorm;
+  };
+  const first = canonOf(data);
+  const targets = new Float64Array(carriers.bits);
+  for (let b = 0; b < carriers.bits; b++) {
+    const bit = codeword[b >> 3] >> 7 - (b & 7) & 1;
+    let k = Math.round((project(first, b) - dither[b]) / p.delta);
+    if ((k % 2 + 2) % 2 !== bit) k += 1;
+    targets[b] = k * p.delta + dither[b];
+  }
+  let out = new Uint8ClampedArray(data);
+  for (let pass = 0; pass < EMBED_PASSES; pass++) {
+    const coeffs = canonOf(out);
+    const corrections = new Float64Array(coeffs.length);
+    let worst = 0;
+    for (let b = 0; b < carriers.bits; b++) {
+      const err2 = targets[b] - project(coeffs, b);
+      worst = Math.max(worst, Math.abs(err2));
+      const scaled = err2 * invNorm;
+      const base = b * chips;
+      for (let c = 0; c < chips; c++) corrections[positions[base + c]] += scaled * signs[base + c];
+    }
+    if (pass > 0 && worst < p.delta * 0.02) break;
+    idct2d(corrections, n);
+    out = applyDeltaToRgba(out, resamplePlane(corrections, n, n, width, height), width, height);
+  }
+  return out;
 }
 function detectFromRgba(data, width, height, p = LOCATOR) {
   return detectFromPlane(lumaFromRgba(data, width, height), width, height, p);
@@ -9439,8 +9478,30 @@ function cmdEmbed(args) {
     );
   }
   const raster = readImage(cover);
+  const calibrated = embedCalibrated(
+    raster.data,
+    raster.width,
+    raster.height,
+    payload,
+    params,
+    (pixels, w, h) => {
+      const scale = Math.min(1, 1080 / Math.max(w, h));
+      const rw = Math.max(1, Math.round(w * scale));
+      const rh = Math.max(1, Math.round(h * scale));
+      const small = new Uint8ClampedArray(rw * rh * 4);
+      for (let ch = 0; ch < 3; ch++) {
+        const plane = new Float64Array(w * h);
+        for (let i = 0; i < w * h; i++) plane[i] = pixels[i * 4 + ch];
+        const resized = resamplePlane(plane, w, h, rw, rh);
+        for (let i = 0; i < rw * rh; i++) small[i * 4 + ch] = resized[i];
+      }
+      for (let i = 0; i < rw * rh; i++) small[i * 4 + 3] = 255;
+      const round = decodeImage(encodeJpeg({ data: small, width: rw, height: rh }, 55));
+      return { data: round.data, width: round.width, height: round.height };
+    }
+  );
   const embedded = {
-    data: embedIntoRgba(raster.data, raster.width, raster.height, payload, params),
+    data: calibrated.pixels,
     width: raster.width,
     height: raster.height
   };
@@ -9458,9 +9519,11 @@ function cmdEmbed(args) {
       capacityBytes: room,
       width: raster.width,
       height: raster.height,
-      verified
+      verified,
+      strength: Number(calibrated.delta.toFixed(1)),
+      survivesStressReencode: calibrated.verified
     },
-    verified ? `Embedded ${payload.length} B in ${mode} mode -> ${out} (verified)` : `Wrote ${out} but verification failed - do not rely on this image`
+    verified ? `Embedded ${payload.length} B in ${mode} mode -> ${out} (verified${calibrated.verified ? "" : ", but it may not survive heavy recompression"}${calibrated.delta > params.delta ? `, strength raised to ${calibrated.delta.toFixed(0)} for this cover` : ""})` : `Wrote ${out} but verification failed - do not rely on this image`
   );
   return verified ? 0 : 1;
 }
